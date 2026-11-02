@@ -23,6 +23,9 @@ from rlinf.utils.logging import get_logger
 
 logger = get_logger()
 
+_TEMPLATE_CONTEXT_BEFORE = 64
+_TEMPLATE_CONTEXT_AFTER = 128
+
 
 class AgenticTokenizer:
     """Model-family-specific tokenization on top of a caller-loaded HF tokenizer.
@@ -31,7 +34,7 @@ class AgenticTokenizer:
     what varies across model families: reasoning markers, the bound parser
     names, and tool-response ids (plain text here, native boundary handling in
     subclasses). Generic encode / decode goes to the HF tokenizer directly.
-    Agent loops that need this build it themselves (currently search-r1).
+    Agent loops that need this build it themselves.
     """
 
     reasoning_parser: str | None = None
@@ -114,6 +117,15 @@ class AgenticTokenizer:
                 ", ".join(missing),
             )
         return think_start_id, think_end_id
+
+    def render_session_chat(self, messages: list[dict], **kwargs: Any) -> str:
+        """Render the text chat history supplied by an external harness."""
+        return self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            **(self.chat_template_kwargs | kwargs),
+        )
 
     def apply_chat_template(self, messages: list[dict], **kwargs: Any):
         merged = {**self.chat_template_kwargs, **kwargs}
@@ -252,6 +264,56 @@ class GLMAgenticTokenizer(AgenticTokenizer):
     reasoning_parser = "glm45"
     tool_call_parser = "glm47"
 
+    def render_session_chat(self, messages: list[dict], **kwargs: Any) -> str:
+        """Preserve generated thinking and whitespace in text-only sessions.
+
+        The assistant content is the exact generated suffix returned by the
+        gateway; the opening thinking marker belongs to the input prompt.
+        """
+        options = self.chat_template_kwargs | kwargs
+        if options.get("clear_thinking", False):
+            raise ValueError(
+                f"GLM training sessions require clear_thinking=False, got {options['clear_thinking']!r}"
+            )
+        marker = "<think>" if options.get("enable_thinking", True) else "</think>"
+        parts = ["[gMASK]<sop>"]
+        for index, message in enumerate(messages):
+            role = message.get("role")
+            content = message.get("content")
+            if role not in {"system", "user", "assistant"} or not isinstance(
+                content, str
+            ):
+                raise ValueError(
+                    f"Expected messages[{index}] with role in system/user/assistant and text content, "
+                    f"got role={role!r}, content type={type(content).__name__}"
+                )
+            if message.get("reasoning_content"):
+                reasoning = message["reasoning_content"]
+                raise ValueError(
+                    f"Expected messages[{index}].reasoning_content to be empty, with reasoning kept in content; "
+                    f"got type={type(reasoning).__name__}, value={str(reasoning)[:_TEMPLATE_CONTEXT_AFTER]!r}"
+                )
+            parts.append(f"<|{role}|>")
+            if role == "assistant":
+                parts.append(marker)
+            parts.append(content)
+        parts.extend(["<|assistant|>", marker])
+        rendered = "".join(parts)
+        if not any(m["role"] == "assistant" for m in messages):
+            expected = super().render_session_chat(messages, **options)
+            if rendered != expected:
+                offset = next(
+                    (i for i, (a, b) in enumerate(zip(expected, rendered)) if a != b),
+                    min(len(expected), len(rendered)),
+                )
+                start = max(0, offset - _TEMPLATE_CONTEXT_BEFORE)
+                end = offset + _TEMPLATE_CONTEXT_AFTER
+                raise ValueError(
+                    f"Expected GLM session rendering to match the model's initial chat template; "
+                    f"at character {offset}, expected {expected[start:end]!r}, got {rendered[start:end]!r}"
+                )
+        return rendered
+
     def __init__(
         self,
         tokenizer,
@@ -264,6 +326,7 @@ class GLMAgenticTokenizer(AgenticTokenizer):
         self.observation_token_id = self.require_token_id("<|observation|>")
         self.user_token_id = self.require_token_id("<|user|>")
         self.ambiguous_token_ids = {self.observation_token_id, self.user_token_id}
+        self.session_boundary_token_ids = frozenset(self.ambiguous_token_ids)
 
     def build_native_tool_response(
         self, prefix_ids: list[int], tool_messages: list[dict]

@@ -64,6 +64,7 @@ from rlinf.data.schema.embodied_types import (
     split_batch_value,
     split_episode_data,
 )
+from rlinf.data.schema.reasoning_results import RolloutResult
 from rlinf.data.storage.lerobot import add_frame_to_dataset, episode_boundaries
 from rlinf.data.storage.lerobot.writer import LeRobotDatasetWriter
 from rlinf.data.storage.replay import TrajectoryReplayBuffer
@@ -3489,3 +3490,39 @@ def test_reward_loaders_accept_one_batch_per_rank(tmp_path):
 
     assert len(train_loader) == 1
     assert len(val_loader) == 1
+
+
+def test_rollout_metadata_survives_merge_and_split():
+    results = [
+        RolloutResult(
+            num_sequence=1,
+            group_size=1,
+            prompt_lengths=[1],
+            prompt_ids=[[10]],
+            response_lengths=[2],
+            response_ids=[[11, 12]],
+            is_end=[True],
+            response_mask=[[1, 0]],
+            rollout_logprobs=[[-1, 0]],
+            token_versions=[[v, -1]],
+            trajectory_metadata=[{"session_id": str(v)}],
+            rewards=[float(v)],
+        )
+        for v in (0, 1)
+    ]
+    merged = RolloutResult.merge_result_list(results)
+    split = RolloutResult.split_results(merged, 2)
+    assert merged.token_versions == [[0, -1], [1, -1]]
+    assert merged.trajectory_metadata == [{"session_id": "0"}, {"session_id": "1"}]
+    assert [r.token_versions for r in split] == [[[0, -1]], [[1, -1]]]
+    grouped = RolloutResult.split_result_list_by_group([merged])
+    assert [r.token_versions for r in grouped] == [[[0, -1]], [[1, -1]]]
+    assert [r.trajectory_metadata for r in grouped] == [
+        [{"session_id": "0"}],
+        [{"session_id": "1"}],
+    ]
+    assert [r.trajectory_metadata for r in split] == [
+        [{"session_id": "0"}],
+        [{"session_id": "1"}],
+    ]
+    assert [r.response_mask for r in split] == [[[1, 0]], [[1, 0]]]

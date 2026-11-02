@@ -281,6 +281,12 @@ def validate_rollout_cfg(cfg, algorithm_cfg, actor_cfg=None):
         cfg.decode_log_interval = cfg.get("decode_log_interval", 500000)
         cfg.use_torch_compile = cfg.get("use_torch_compile", False)
         cfg.torch_compile_max_bs = cfg.get("torch_compile_max_bs", 128)
+        cfg.return_generation_errors = cfg.get("return_generation_errors", False)
+        if not isinstance(cfg.return_generation_errors, bool):
+            raise ValueError(
+                "sglang.return_generation_errors must be a bool, "
+                f"got {cfg.return_generation_errors!r}"
+            )
         return cfg
 
     def validate_vllm_cfg(cfg):
@@ -1555,6 +1561,47 @@ def validate_reasoning_cfg(cfg: DictConfig) -> DictConfig:
     return cfg
 
 
+def validate_harbor_cfg(cfg: DictConfig) -> DictConfig:
+    """Validate the synchronous Harbor training contract before workers launch."""
+    if OmegaConf.select(cfg, "agentloop.harbor") is None:
+        return cfg
+    required = {
+        "rollout.rollout_backend": "sglang",
+        "rollout.return_logprobs": True,
+        "rollout.sglang.return_generation_errors": True,
+        "algorithm.recompute_logprobs": False,
+        "agentloop.is_dynamic_rollout_batch": False,
+    }
+    for key, expected in required.items():
+        actual = OmegaConf.select(cfg, key)
+        if actual != expected:
+            raise ValueError(f"Harbor requires {key}={expected!r}, got {actual!r}")
+    with open_dict(cfg):
+        cfg.agentloop.agentic_tokenizer = cfg.agentloop.get(
+            "agentic_tokenizer", "default"
+        )
+        cfg.agentloop.chat_template_kwargs = cfg.agentloop.get(
+            "chat_template_kwargs", {}
+        )
+        cfg.agentloop.harbor.max_consecutive_aborted_batches = cfg.agentloop.harbor.get(
+            "max_consecutive_aborted_batches", 32
+        )
+    if "max_new_tokens" in cfg.agentloop.harbor:
+        raise ValueError(
+            "Set algorithm.sampling_params.max_new_tokens only; "
+            f"got duplicate agentloop.harbor.max_new_tokens={cfg.agentloop.harbor.max_new_tokens!r}"
+        )
+    for key in (
+        "algorithm.sampling_params.max_new_tokens",
+        "agentloop.harbor.max_consecutive_aborted_batches",
+        "agentloop.harbor.max_concurrency",
+    ):
+        value = OmegaConf.select(cfg, key)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"{key} must be a positive integer, got {value!r}")
+    return cfg
+
+
 def validate_searchr1_cfg(cfg: DictConfig) -> DictConfig:
     """Validate SearchR1 multi-agent training requirements before launch."""
     reward_cfg = cfg.get("reward", None)
@@ -1766,6 +1813,7 @@ def validate_cfg(cfg: DictConfig) -> DictConfig:
         return cfg
     elif cfg.runner.task_type == "reasoning":
         cfg = validate_reasoning_cfg(cfg)
+        cfg = validate_harbor_cfg(cfg)
     elif cfg.runner.task_type == "coding_online_rl":
         cfg = validate_coding_online_rl_cfg(cfg)
     elif cfg.runner.task_type == "reasoning_eval":

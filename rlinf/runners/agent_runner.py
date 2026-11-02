@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import itertools
 import logging
 import typing
@@ -24,15 +26,16 @@ from tqdm import tqdm
 from rlinf.runners.reasoning_runner import ReasoningRunner
 from rlinf.scheduler import Channel
 from rlinf.scheduler import WorkerGroupFuncResult as Handle
+from rlinf.utils.logging import get_logger
 from rlinf.utils.placement import ModelParallelComponentPlacement
 from rlinf.utils.runner_utils import check_progress
-from rlinf.workers.actor.megatron_actor_worker import MegatronActor
 from rlinf.workers.agent.agent_loop import AgentLoopWorker
 from rlinf.workers.agent.tool_worker import ToolChannelInfo, ToolWorker, ToolWorkerInfo
-from rlinf.workers.inference.megatron_inference_worker import MegatronInference
 from rlinf.workers.reward.reward_worker import RewardWorker
 
 if typing.TYPE_CHECKING:
+    from rlinf.workers.actor.megatron_actor_worker import MegatronActor
+    from rlinf.workers.inference.megatron_inference_worker import MegatronInference
     from rlinf.workers.rollout.sglang.sglang_worker import SGLangWorker
     from rlinf.workers.rollout.vllm.vllm_worker import VLLMWorker
 
@@ -83,6 +86,9 @@ class AgentRunner(ReasoningRunner):
             f"AgentRunner: tool_calls must be unique. all tool_calls are {all_tool_calls}"
         )
         self.agent_loop = agent_loop
+        self._harbor_config = cfg.agentloop.get("harbor")
+        self._skipped_batches = 0
+        self._consecutive_aborted_batches = 0
         self.batch_split_num = len(agent_loop._workers)
         self.tool_workers = tool_workers
         self.solid_rollouts = solid_rollouts
@@ -157,12 +163,65 @@ class AgentRunner(ReasoningRunner):
 
     def _sync_weights(self):
         super()._sync_weights()
+        if self._harbor_config is not None:
+            self.rollout.set_policy_version(self.global_steps).wait()
         if not self.is_pipeline:
             onload_handles = []
             for solid_rollout in self.solid_rollouts.values():
                 onload_handles.append(solid_rollout.onload_engine())
             for handle in onload_handles:
                 handle.wait()
+
+    def _collect_rollout(self, handle: Handle) -> dict | None:
+        if self._harbor_config is not None:
+            return self._collect_harbor_rollout(handle)
+        if self.is_pipeline:
+            # Defer the wait to the actor boundary so reward/inference can overlap;
+            # run() replaces this placeholder with the completed rollout metrics.
+            return {}
+        return handle.wait()[0]
+
+    def _collect_harbor_rollout(self, handle: Handle) -> dict | None:
+        worker_metrics = handle.wait()
+        aborted = any(
+            metrics.get("harbor/batch_aborted", 0) for metrics in worker_metrics
+        )
+        self.agent_loop.publish_rollout(self.rollout_channel, accept=not aborted).wait()
+        if not aborted:
+            self._consecutive_aborted_batches = 0
+            metrics = worker_metrics[0]
+            metrics["harbor/skipped_batches"] = self._skipped_batches
+            return metrics
+
+        self._skipped_batches += 1
+        self._consecutive_aborted_batches += 1
+        get_logger().warning(
+            "Discarding incomplete Harbor batch at update %s; skipped=%s",
+            self.global_steps,
+            self._skipped_batches,
+        )
+        limit = self._harbor_config.max_consecutive_aborted_batches
+        persistent_failure = self._consecutive_aborted_batches >= limit
+        if persistent_failure or self.run_timer.is_finished():
+            if not self.is_pipeline:
+                self.rollout.offload_engine().wait()
+            self._save_checkpoint()
+        if persistent_failure:
+            raise RuntimeError(
+                f"Expected fewer than {limit} consecutive incomplete Harbor batches, "
+                f"got {self._consecutive_aborted_batches}; inspect service health"
+            )
+        return None
+
+    def _shutdown_harbor(self) -> None:
+        if self._harbor_config is None:
+            return
+        try:
+            self.agent_loop.shutdown().wait()
+        except Exception:
+            get_logger().exception(
+                "Harbor shutdown failed; inspect service cleanup state"
+            )
 
     def run(self):
         epoch_iter = range(self.epoch, self.cfg.runner.max_epochs)
@@ -177,6 +236,7 @@ class AgentRunner(ReasoningRunner):
             ncols=620,
         )
 
+        sync_required = True
         self.run_timer.start_time()
         self.rollout.rollout_serverless(
             self.generate_input_channel, self.generate_output_channel
@@ -191,12 +251,17 @@ class AgentRunner(ReasoningRunner):
         try:
             for _ in epoch_iter:
                 for batch in self.train_dataloader:
+                    if self._harbor_config is not None:
+                        # Discarded batches skip metric reporting and leave timings behind.
+                        self.timer.consume_durations()
                     with self.timer("step"):
                         with self.timer("prepare_data"):
                             self._put_batch(batch, self.batch_split_num)
 
                         with self.timer("sync_weights"):
-                            self._sync_weights()
+                            if sync_required:
+                                self._sync_weights()
+                                sync_required = False
 
                         # Rollout
                         rollout_handle: Handle = self.agent_loop.run_agentloop_rollout(
@@ -204,8 +269,15 @@ class AgentRunner(ReasoningRunner):
                             output_channel=self.rollout_channel,
                         )
 
+                        agent_metrics = self._collect_rollout(rollout_handle)
+                        if agent_metrics is None:
+                            if self.run_timer.is_finished():
+                                logging.info(
+                                    f"Time limit given by run_timer={self.run_timer} reached. Stopping run"
+                                )
+                                return
+                            continue
                         if not self.is_pipeline:
-                            agent_metrics = rollout_handle.wait()[0]
                             offload_handles = [self.rollout.offload_engine()]
                             for solid_rollout in self.solid_rollouts.values():
                                 offload_handles.append(solid_rollout.offload_engine())
@@ -235,7 +307,7 @@ class AgentRunner(ReasoningRunner):
                             inference_channel = inference_input_channel
 
                         # Actor training, Advantages and returns
-                        if self.is_pipeline:
+                        if self.is_pipeline and self._harbor_config is None:
                             agent_metrics = rollout_handle.wait()[0]
                         actor_handle: Handle = self.actor.run_training(
                             input_channel=inference_channel,
@@ -245,6 +317,7 @@ class AgentRunner(ReasoningRunner):
                         actor_rollout_metrics = metrics[0][0]
                         actor_training_metrics = metrics[0][1]
                         self.global_steps += 1
+                        sync_required = True
 
                         run_time_exceeded = self.run_timer.is_finished()
                         _, save_model, is_train_end = check_progress(
@@ -314,6 +387,7 @@ class AgentRunner(ReasoningRunner):
                     global_pbar.set_postfix(logging_metrics, refresh=False)
                     global_pbar.update(1)
         finally:
+            self._shutdown_harbor()
             for tool_worker in self.tool_workers:
                 tool_worker.stop_server()
             self.metric_logger.finish()
