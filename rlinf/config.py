@@ -319,8 +319,10 @@ def validate_rollout_cfg(cfg, algorithm_cfg, actor_cfg=None):
         cfg.return_logprobs = cfg.return_logprobs or algorithm_cfg.get(
             "importance_sampling_fix", False
         )
-        cfg.sglang = validate_sglang_cfg(cfg.sglang)
-        cfg.vllm = validate_vllm_cfg(cfg.vllm)
+        if cfg.rollout_backend == "sglang" or cfg.get("sglang") is not None:
+            cfg.sglang = validate_sglang_cfg(cfg.get("sglang"))
+        if cfg.rollout_backend == "vllm" or cfg.get("vllm") is not None:
+            cfg.vllm = validate_vllm_cfg(cfg.get("vllm"))
 
     return cfg
 
