@@ -177,6 +177,9 @@ jobs:
               - '.github/workflows/offline_rl-e2e-tests.yml'
             unit_test_filter: &unit
               - *shared
+              - 'rlinf/workers/agent/harbor/**'
+              - 'rlinf/workers/agent/harbor_agent_loop_worker.py'
+              - 'rlinf/workers/agent/harbor_task_worker.py'
               - 'rlinf/robotics/**'
               # Unit tests import env modules directly (robot task envs, the
               # real-world compatibility suite, maniskill offload, delay

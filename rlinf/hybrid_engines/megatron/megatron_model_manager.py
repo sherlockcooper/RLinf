@@ -17,6 +17,7 @@ import importlib.util
 import inspect
 import itertools
 import os
+from argparse import Namespace
 from contextlib import contextmanager, nullcontext
 from functools import partial
 from typing import TYPE_CHECKING, Iterator, Optional
@@ -36,6 +37,7 @@ from rlinf.utils.logging import get_logger
 from rlinf.utils.profiler import PyTorchProfiler, PyTorchProfilerFunc
 from rlinf.utils.utils import clear_memory
 
+from .checkpoint_utils import reuse_hybrid_optimizer_buffers
 from .utils import (
     postprocess_packed_seqs,
     preprocess_packed_seqs,
@@ -111,6 +113,14 @@ try:
 except Exception:
     fusco_lib = None
     HAVE_FUSCO = False
+
+
+def _preprocess_checkpoint_common_state(common_state_dict: dict) -> dict:
+    """Adapt RLinf config arguments to Megatron's checkpoint validation API."""
+    if isinstance(common_state_dict.get("args"), DictConfig):
+        common_state_dict = dict(common_state_dict)
+        common_state_dict["args"] = Namespace(**dict(common_state_dict["args"]))
+    return preprocess_common_state_dict(common_state_dict)
 
 
 def get_specs(spec_name, transformer_config=None, use_te=False):
@@ -304,6 +314,7 @@ class MegatronModelManager:
                 "tensor_model_parallel_size",
                 "pipeline_model_parallel_size",
                 "expert_model_parallel_size",
+                "expert_tensor_parallel_size",
                 "context_parallel_size",
                 "gradient_accumulation_fusion",
                 "moe_aux_loss_coeff",
@@ -579,7 +590,7 @@ class MegatronModelManager:
             return
 
         with self.ensure_onloaded_and_then_offload():
-            if self.mbridge:
+            if self.mbridge and self._cfg.megatron.get("save_hf_checkpoint", True):
                 # save mbridge checkpoint to hf checkpoint
                 hf_save_path = os.path.join(save_path, "hf_checkpoint")
                 self.bridge.save_hf_pretrained(
@@ -600,7 +611,7 @@ class MegatronModelManager:
                 opt_param_scheduler=self.lr_scheduler,
                 num_floating_point_operations_so_far=num_floating_point_operations_so_far,
                 checkpointing_context=self.checkpoint_context,
-                preprocess_common_state_dict_fn=preprocess_common_state_dict,
+                preprocess_common_state_dict_fn=_preprocess_checkpoint_common_state,
             )
 
     def load_checkpoint(self, load_path):
@@ -618,12 +629,13 @@ class MegatronModelManager:
 
             torch.load = trusted_torch_load
             try:
-                load_checkpoint(
-                    self.model,
-                    self.optimizer,
-                    self.lr_scheduler,
-                    checkpointing_context=self.checkpoint_context,
-                )
+                with reuse_hybrid_optimizer_buffers(self.optimizer):
+                    load_checkpoint(
+                        self.model,
+                        self.optimizer,
+                        self.lr_scheduler,
+                        checkpointing_context=self.checkpoint_context,
+                    )
             finally:
                 torch.load = original_torch_load
 

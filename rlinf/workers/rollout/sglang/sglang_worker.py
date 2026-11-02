@@ -56,6 +56,8 @@ class SGLangWorker(Worker):
         Worker.__init__(self)
 
         self._cfg = config
+        self._policy_version = None
+        self._active_generations = 0
         # 'sync': sync weight from actor;
         # 'cpu': save weight from cpu and reload weight from cpu
         # None: no need to reload, only used in eval
@@ -224,7 +226,8 @@ class SGLangWorker(Worker):
             attention_backend=self._cfg_rollout.sglang.attention_backend,
             log_level="info",
             max_running_requests=self._cfg_rollout.max_running_requests,
-            dist_init_addr=f"127.0.0.1:{str(self.acquire_free_port())}",
+            dist_init_addr=self._cfg_rollout.sglang.get("dist_init_addr")
+            or f"127.0.0.1:{self.acquire_free_port()}",
             tool_call_parser=self._cfg_rollout.sglang.get("tool_call_parser", None),
             trust_remote_code=self._cfg_rollout.model.trust_remote_code,
             **version_dependent_args,
@@ -515,6 +518,15 @@ class SGLangWorker(Worker):
                 if self._use_auto_scheduler:
                     await self._scheduler.report_offloaded()
 
+    def set_policy_version(self, version: int):
+        if self._active_generations:
+            raise RuntimeError(
+                "Cannot change policy version while generation is active"
+            )
+        if version < 0:
+            raise ValueError("Policy version must be nonnegative")
+        self._policy_version = version
+
     async def generate_and_send(
         self,
         output_channel: Channel,
@@ -528,20 +540,32 @@ class SGLangWorker(Worker):
             for key, value in sampling_params.items():
                 final_sampling_params[key] = value
 
-        result = await self._engine.async_generate(
-            input_ids=prompt_ids,
-            sampling_params=final_sampling_params,
-            return_logprob=self._return_logprobs,
-        )
-        # sglang will trim matched stop in result text, so we should only return output_ids
-        result_dict = {
-            "output_ids": result["output_ids"],
-            "finish_reason": result["meta_info"]["finish_reason"]["type"],
-        }
-        if self._return_logprobs:
-            result_dict["logprobs"] = [
-                item[0] for item in result["meta_info"]["output_token_logprobs"]
-            ]
+        version = self._policy_version
+        self._active_generations += 1
+        try:
+            result = await self._engine.async_generate(
+                input_ids=prompt_ids,
+                sampling_params=final_sampling_params,
+                return_logprob=self._return_logprobs,
+            )
+            if version != self._policy_version:
+                raise RuntimeError("Policy version changed during generation")
+            result_dict = {
+                "output_ids": result["output_ids"],
+                "finish_reason": result["meta_info"]["finish_reason"]["type"],
+            }
+            if self._return_logprobs:
+                result_dict["logprobs"] = [
+                    item[0] for item in result["meta_info"]["output_token_logprobs"]
+                ]
+            if version is not None:
+                result_dict["token_versions"] = [version] * len(result["output_ids"])
+        except Exception as exc:
+            if version is None:
+                raise
+            result_dict = {"error": f"{type(exc).__name__}: {exc}"}
+        finally:
+            self._active_generations -= 1
         await output_channel.put(
             result_dict, key=channel_key, async_op=True
         ).async_wait()

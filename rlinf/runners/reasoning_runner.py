@@ -150,7 +150,7 @@ class ReasoningRunner:
 
         # Timers
         self.timer = ScopedTimer(reduction="max", sync_cuda=False)
-        self.run_timer = Timer(None)  # Timer that checks if we should stop training
+        self.run_timer = Timer.from_hours(cfg.runner.get("max_duration_hours"))
 
         self.metric_logger = MetricLogger(cfg)
 
@@ -322,8 +322,13 @@ class ReasoningRunner:
                 logging.info(f"Auto resume from checkpoint: {resume_dir}")
             else:
                 logging.info("No complete checkpoints found, starting from scratch")
-        self.init_rollout_workers()
-        self.init_actor_critic_workers()
+        if self.cfg.runner.resume_dir is not None:
+            # Keep rollout weights out of host memory during optimizer restoration.
+            self.init_actor_critic_workers()
+            self.init_rollout_workers()
+        else:
+            self.init_rollout_workers()
+            self.init_actor_critic_workers()
 
     def _compute_flops_metrics(self, time_metrics, act_rollout_metrics) -> dict:
         rollout_time = time_metrics.get("rollout")

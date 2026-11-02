@@ -1,0 +1,23 @@
+listen:
+  host: 127.0.0.1
+  port: 30200
+max_concurrency: 8
+max_timeout_s: 900
+cleanup_timeout_s: 20
+max_records: 1024
+executor:
+  tasks_dir: /data/harbor/tasks
+  trials_dir: /data/harbor/trials
+  agent_config:
+    name: mini-swe-agent
+    override_timeout_sec: 600
+    override_setup_timeout_sec: 60
+    kwargs:
+      version: 2.4.6
+      max_tokens: 768
+      max_seq_len: 8192
+      config_file: /data/harbor/mini_textbased.yaml
+    env:
+      MSWEA_COST_TRACKING: ignore_errors
+  environment_config:
+    type: docker

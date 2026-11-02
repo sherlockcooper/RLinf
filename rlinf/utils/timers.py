@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
 import time
 from dataclasses import dataclass
 from datetime import timedelta
@@ -39,6 +40,22 @@ class Timer:
 
     def start_time(self):
         self._start_time = time.monotonic()
+
+    @classmethod
+    def from_hours(cls, hours: Optional[float]) -> "Timer":
+        """Create an unlimited timer or a finite, positive wall-clock budget."""
+        timer = cls(None)
+        if hours is not None:
+            if (
+                isinstance(hours, bool)
+                or not math.isfinite(float(hours))
+                or float(hours) <= 0
+            ):
+                raise ValueError(
+                    "max_duration_hours must be finite and greater than zero"
+                )
+            timer._duration = float(hours) * 3600
+        return timer
 
     def get_time_elapsed(self):
         return time.monotonic() - self._start_time

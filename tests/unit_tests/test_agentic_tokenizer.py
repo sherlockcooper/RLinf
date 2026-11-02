@@ -233,3 +233,28 @@ def test_get_agentic_tokenizer_unknown_type():
     assert "nope" in msg
     for valid in ("default", "qwen", "glm47"):
         assert valid in msg
+
+
+@pytest.mark.parametrize("thinking", [True, False])
+def test_glm_session_retains_generated_whitespace(thinking):
+    from rlinf.agents.tokenization.agentic_tokenizer import GLMAgenticTokenizer
+
+    tokenizer = object.__new__(GLMAgenticTokenizer)
+    tokenizer.chat_template_kwargs = {"clear_thinking": False}
+    content = "  reason\n</think>\nanswer  \n" if thinking else "  answer  \n"
+    messages = [
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": content},
+        {"role": "user", "content": "format error"},
+    ]
+    marker = "<think>" if thinking else "</think>"
+    rendered = tokenizer.render_session_chat(messages, enable_thinking=thinking)
+    assert rendered == (
+        "[gMASK]<sop><|user|>task<|assistant|>"
+        + marker
+        + content
+        + "<|user|>format error<|assistant|>"
+        + marker
+    )
+    with pytest.raises(ValueError, match="clear_thinking=False"):
+        tokenizer.render_session_chat(messages, clear_thinking=True)

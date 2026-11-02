@@ -60,6 +60,12 @@
 
       添加 Megatron-Bridge 与权重同步工作流。
 
+   .. grid-item-card:: Harbor 任务服务
+      :link: harbor
+      :link-type: doc
+
+      通过独立 HTTP 服务运行隔离的 agent trial。
+
 .. toctree::
    :hidden:
 
@@ -72,3 +78,4 @@
    SGLang 具身模型 <sglang_embodied_model>
    新 SFT 模型 <new_model_sft>
    高级集成 <advanced-integrations/index>
+   Harbor 任务服务 <harbor>

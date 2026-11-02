@@ -211,19 +211,25 @@ def compute_ppo_actor_loss(
     Returns:
         Tuple[torch.Tensor, Dict]: (actor_loss, metrics_dict)
     """
-    if fast_path_zero_loss_mask and (
-        loss_mask is not None and loss_mask[0].sum() == 0.0
+    if (
+        fast_path_zero_loss_mask
+        and loss_mask is not None
+        and not loss_mask.any()
+        and not log_logprob_diagnostics
     ):
-        return torch.tensor(0.0, device=logprobs.device), {
-            "actor/token_num": torch.tensor(0.0, device=logprobs.device),
-            "actor/policy_loss": torch.tensor(0.0, device=logprobs.device),
-            "actor/policy_loss_mbs_mean": torch.tensor(0.0, device=logprobs.device),
-            "actor/policy_loss_abs": torch.tensor(0.0, device=logprobs.device),
-            "actor/ratio": torch.tensor(0.0, device=logprobs.device),
-            "actor/clipped_ratio": torch.tensor(0.0, device=logprobs.device),
-            "actor/dual_cliped_ratio": torch.tensor(0.0, device=logprobs.device),
-            "actor/approx_kl": torch.tensor(0.0, device=logprobs.device),
-            "actor/clip_fraction": torch.tensor(0.0, device=logprobs.device),
+        zero_loss = logprobs.masked_fill(~loss_mask, 0.0).sum()
+        return zero_loss, {
+            f"actor/{key}": zero_loss.detach()
+            for key in (
+                "policy_loss",
+                "policy_loss_abs",
+                "ratio",
+                "ratio_abs",
+                "clipped_ratio",
+                "dual_cliped_ratio",
+                "approx_kl",
+                "clip_fraction",
+            )
         }
 
     loss_mask_ratio = None
