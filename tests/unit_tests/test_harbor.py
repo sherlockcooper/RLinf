@@ -546,6 +546,7 @@ def test_harbor_config_uses_only_selected_backend_and_one_token_limit():
     assert "vllm" not in cfg.rollout
     assert "max_new_tokens" not in cfg.agentloop.harbor
     assert cfg.rollout.sglang.return_generation_errors is True
+    assert {"async_strategy", "verify_integrity"} <= cfg.actor.megatron.keys()
     cfg.algorithm.recompute_logprobs = True
     with pytest.raises(
         ValueError, match="algorithm.recompute_logprobs=False, got True"

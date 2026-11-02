@@ -261,6 +261,9 @@ actor:
     distributed_timeout_minutes: 30
     ckpt_format: torch_dist
     use_dist_ckpt: True
+    async_save: False
+    async_strategy: nvrx
+    verify_integrity: False
     tp_comm_bootstrap_backend: nccl
     tp_comm_overlap_cfg: null
     use_hf_ckpt: True # Initialize training weights from the Hugging Face model.
