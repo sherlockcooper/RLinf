@@ -56,10 +56,16 @@ class SGLangWorker(Worker):
         Worker.__init__(self)
 
         self._cfg = config
+        self._policy_version = None
+        self._active_generations = 0
         # 'sync': sync weight from actor;
         # 'cpu': save weight from cpu and reload weight from cpu
         # None: no need to reload, only used in eval
         self.weight_reload = weight_reload
+        # The main rollout's configured error policy controls channel responses.
+        self._return_generation_errors = (
+            config_rollout is None and self._cfg.rollout.sglang.return_generation_errors
+        )
         if config_rollout is None:
             config_rollout = self._cfg.rollout
         self._cfg_rollout = config_rollout
@@ -515,6 +521,27 @@ class SGLangWorker(Worker):
                 if self._use_auto_scheduler:
                     await self._scheduler.report_offloaded()
 
+    def set_policy_version(self, version: int) -> None:
+        """Tag subsequent generated tokens with a synchronized policy version.
+
+        Args:
+            version: Nonnegative version of the weights most recently synchronized.
+
+        Raises:
+            RuntimeError: Generation is still using the previous weights.
+            ValueError: The version is not a nonnegative integer.
+        """
+        if self._active_generations:
+            raise RuntimeError(
+                "Expected zero active generations before changing policy version, "
+                f"got {self._active_generations} (version={self._policy_version!r}, requested={version!r})"
+            )
+        if not isinstance(version, int) or isinstance(version, bool) or version < 0:
+            raise ValueError(
+                f"Policy version must be a nonnegative integer, got {version!r}"
+            )
+        self._policy_version = version
+
     async def generate_and_send(
         self,
         output_channel: Channel,
@@ -528,20 +555,34 @@ class SGLangWorker(Worker):
             for key, value in sampling_params.items():
                 final_sampling_params[key] = value
 
-        result = await self._engine.async_generate(
-            input_ids=prompt_ids,
-            sampling_params=final_sampling_params,
-            return_logprob=self._return_logprobs,
-        )
-        # sglang will trim matched stop in result text, so we should only return output_ids
-        result_dict = {
-            "output_ids": result["output_ids"],
-            "finish_reason": result["meta_info"]["finish_reason"]["type"],
-        }
-        if self._return_logprobs:
-            result_dict["logprobs"] = [
-                item[0] for item in result["meta_info"]["output_token_logprobs"]
-            ]
+        version = self._policy_version
+        self._active_generations += 1
+        try:
+            result = await self._engine.async_generate(
+                input_ids=prompt_ids,
+                sampling_params=final_sampling_params,
+                return_logprob=self._return_logprobs,
+            )
+            if version != self._policy_version:
+                raise RuntimeError(
+                    f"Expected policy version {version!r} throughout generation, got {self._policy_version!r}"
+                )
+            result_dict = {
+                "output_ids": result["output_ids"],
+                "finish_reason": result["meta_info"]["finish_reason"]["type"],
+            }
+            if self._return_logprobs:
+                result_dict["logprobs"] = [
+                    item[0] for item in result["meta_info"]["output_token_logprobs"]
+                ]
+            if version is not None:
+                result_dict["token_versions"] = [version] * len(result["output_ids"])
+        except Exception as exc:
+            if not self._return_generation_errors:
+                raise
+            result_dict = {"error": f"{type(exc).__name__}: {exc}"}
+        finally:
+            self._active_generations -= 1
         await output_channel.put(
             result_dict, key=channel_key, async_op=True
         ).async_wait()

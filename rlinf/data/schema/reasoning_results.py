@@ -58,6 +58,8 @@ class RolloutResult:
     # Inference
     # Logprobs returned by rollout engines
     rollout_logprobs: Optional[list[list[float]]] = None
+    token_versions: Optional[list[list[int]]] = None
+    trajectory_metadata: Optional[list[dict]] = None
     # Logprobs recomputed by the actor model's inference forward,
     # used as old_logprobs in policy loss when available.
     recomputed_logprobs: Optional[torch.Tensor] = None
@@ -317,6 +319,13 @@ class RolloutResult:
                 merged_result.rollout_logprobs = merge_list(
                     merged_result.rollout_logprobs, res.rollout_logprobs
                 )
+            for name in ("token_versions", "trajectory_metadata"):
+                if getattr(res, name) is not None:
+                    setattr(
+                        merged_result,
+                        name,
+                        merge_list(getattr(merged_result, name), getattr(res, name)),
+                    )
             if res.recomputed_logprobs is not None:
                 merged_result.recomputed_logprobs = merge_tensor(
                     merged_result.recomputed_logprobs, res.recomputed_logprobs
@@ -421,6 +430,17 @@ class RolloutResult:
                 rollout_result.rollout_logprobs, num_groups
             )
 
+        token_versions_split = (
+            split_list(rollout_result.token_versions, num_groups)
+            if rollout_result.token_versions is not None
+            else None
+        )
+        trajectory_metadata_split = (
+            split_list(rollout_result.trajectory_metadata, num_groups)
+            if rollout_result.trajectory_metadata is not None
+            else None
+        )
+
         # Handle tensor fields
         rewards_split = None
         if rollout_result.rewards is not None:
@@ -483,6 +503,12 @@ class RolloutResult:
                 else None,
                 rollout_logprobs=rollout_logprobs_split[i]
                 if rollout_logprobs_split is not None
+                else None,
+                token_versions=token_versions_split[i]
+                if token_versions_split is not None
+                else None,
+                trajectory_metadata=trajectory_metadata_split[i]
+                if trajectory_metadata_split is not None
                 else None,
                 rewards=rewards_split[i] if rewards_split is not None else None,
                 advantages=advantages_split[i]
@@ -753,6 +779,8 @@ class RolloutResult:
             "response_texts",
             "rollout_logprobs",
             "response_mask",
+            "token_versions",
+            "trajectory_metadata",
         ]
         for k in list_fields:
             v = getattr(rollout_result, k)
@@ -806,6 +834,8 @@ class RolloutResult:
                 image_data=fields_split["image_data"][i],
                 multi_modal_inputs=fields_split["multi_modal_inputs"][i],
                 response_mask=fields_split["response_mask"][i],
+                token_versions=fields_split["token_versions"][i],
+                trajectory_metadata=fields_split["trajectory_metadata"][i],
                 rollout_logprobs=fields_split["rollout_logprobs"][i],
                 recomputed_logprobs=fields_split["recomputed_logprobs"][i],
                 ref_logprobs=fields_split["ref_logprobs"][i],

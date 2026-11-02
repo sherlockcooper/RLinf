@@ -63,11 +63,11 @@ The following examples include math reasoning RL and agentic AI workflows, such 
      </div>
 
      <div style="flex: 1 1 30%; max-width: 300px; text-align: center;">
-       <img src="https://raw.githubusercontent.com/RLinf/misc/main/pic/waiting_icon.jpg"
-            style="width: 100%; height: 200px; object-fit: cover; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.15);" />
        <p style="margin-top: 8px; font-size: 14px; line-height: 1.4;">
-         <b>[Ongoing]SWE-agent</b><br>
-         Unified deployment, inference, and training with high flexibility and performance
+        <a href="swe_agent.html" style="text-decoration: underline; color: blue;">
+          <b>SWE-agent RL Training</b>
+         </a><br>
+         Train Qwen3-30B-A3B to resolve GitHub issues with mini-swe-agent in Harbor sandboxes
        </p>
      </div>
 
@@ -106,3 +106,4 @@ The following examples include math reasoning RL and agentic AI workflows, such 
    rStar2 <rstar2>
    Math Reasoning <math_reasoning/index>
    Qwen3 VL GRPO <qwen3_vl_geo3k>
+   SWE-agent <swe_agent>

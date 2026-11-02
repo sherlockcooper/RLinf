@@ -62,11 +62,11 @@ RLinf的worker抽象、灵活的通信组件、以及对不同类型加速器的
      </div>
 
      <div style="flex: 1 1 30%; max-width: 300px; text-align: center;">
-       <img src="https://raw.githubusercontent.com/RLinf/misc/main/pic/waiting_icon.jpg"
-            style="width: 100%; height: 200px; object-fit: cover; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.15);" />
        <p style="margin-top: 8px; font-size: 14px; line-height: 1.4;">
-         <b>[适配中]SWE-agent</b><br>
-         部署、推理、训练一体，高灵活性、高性能
+        <a href="swe_agent.html" style="text-decoration: underline; color: blue;">
+          <b>SWE-agent 强化学习训练</b>
+         </a><br>
+         在 Harbor sandbox 中运行 mini-swe-agent，训练 Qwen3-30B-A3B 解决 GitHub issue
        </p>
      </div>
 
@@ -105,3 +105,4 @@ RLinf的worker抽象、灵活的通信组件、以及对不同类型加速器的
    rStar2 <rstar2>
    数学推理 <math_reasoning/index>
    Qwen3 VL GRPO <qwen3_vl_geo3k>
+   SWE-agent <swe_agent>

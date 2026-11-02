@@ -1,0 +1,116 @@
+# Copyright 2025 The RLinf Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
+"""Launch synchronous Harbor agent training."""
+
+import hydra
+import torch.multiprocessing as mp
+from omegaconf import DictConfig
+
+from rlinf.config import validate_cfg
+from rlinf.data.datasets.reasoning import create_reasoning_datasets
+from rlinf.models.tokenization.hf import hf_tokenizer
+from rlinf.runners.agent_runner import AgentRunner
+from rlinf.scheduler import Cluster, NodePlacementStrategy, Worker
+from rlinf.utils.placement import ModelParallelComponentPlacement
+from rlinf.utils.utils import output_redirector
+from rlinf.workers.actor.fsdp_actor_worker import FSDPActor
+from rlinf.workers.agent.harbor_agent_loop_worker import HarborAgentLoopWorker
+from rlinf.workers.rollout.utils import get_rollout_backend_worker
+
+mp.set_start_method("spawn", force=True)
+
+
+def get_actor_worker(cfg: DictConfig) -> type[Worker]:
+    """Select the actor worker for the configured training backend."""
+    if cfg.actor.training_backend == "fsdp":
+        return FSDPActor
+    if cfg.actor.training_backend == "megatron":
+        from rlinf.workers.actor.megatron_actor_worker import MegatronActor
+
+        return MegatronActor
+    raise ValueError(
+        f"Expected Harbor actor backend in ['fsdp', 'megatron'], got {cfg.actor.training_backend!r}"
+    )
+
+
+@hydra.main(version_base="1.1")
+@output_redirector
+def main(cfg: DictConfig) -> None:
+    """Launch synchronous Harbor training from the validated Hydra configuration."""
+    cfg = validate_cfg(cfg)
+    cluster = Cluster(cluster_cfg=cfg.cluster)
+    component_placement = ModelParallelComponentPlacement(cfg, cluster)
+
+    # Generator group
+    rollout_worker_cls = get_rollout_backend_worker(cfg)
+    rollout_placement_strategy = component_placement.get_strategy("rollout")
+    rollout_group = rollout_worker_cls.create_group(cfg, component_placement).launch(
+        cluster,
+        name=cfg.rollout.group_name,
+        placement_strategy=rollout_placement_strategy,
+    )
+
+    # AgentLoop group.
+    agentloop_placement_strategy = NodePlacementStrategy(
+        [
+            placement.cluster_node_rank
+            for placement in rollout_placement_strategy.get_placement(cluster)
+        ]
+    )
+    assert (
+        len(agentloop_placement_strategy._node_ranks)
+        == component_placement.rollout_dp_size
+    ), (
+        f"Expected {component_placement.rollout_dp_size} agent loop workers, "
+        f"got {len(agentloop_placement_strategy._node_ranks)}"
+    )
+    agentloop_group = HarborAgentLoopWorker.create_group(
+        cfg, component_placement
+    ).launch(
+        cluster,
+        name=cfg.agentloop.group_name,
+        placement_strategy=agentloop_placement_strategy,
+    )
+
+    # GRPO Actor group
+    actor_placement_strategy = component_placement.get_strategy("actor")
+    actor_worker_cls = get_actor_worker(cfg)
+    actor_group = actor_worker_cls.create_group(cfg, component_placement).launch(
+        cluster, name=cfg.actor.group_name, placement_strategy=actor_placement_strategy
+    )
+
+    # Dataset
+    tokenizer = hf_tokenizer(cfg.actor.tokenizer.tokenizer_model)
+    train_ds, val_ds = create_reasoning_datasets(cfg, tokenizer)
+
+    runner = AgentRunner(
+        cfg=cfg,
+        placement=component_placement,
+        train_dataset=train_ds,
+        val_dataset=val_ds,
+        rollout=rollout_group,
+        inference=None,
+        actor=actor_group,
+        reward=None,
+        agent_loop=agentloop_group,
+    )
+
+    runner.init_workers()
+    runner.run()
+
+
+if __name__ == "__main__":
+    main()
