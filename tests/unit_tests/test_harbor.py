@@ -16,6 +16,8 @@
 
 import asyncio
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -532,6 +534,56 @@ def test_invalid_verifier_score_has_no_training_reward(tmp_path, raw_reward):
     assert result.reward is None
     assert result.infrastructure_failure
     assert result.failure_kind == "missing_reward"
+
+
+@pytest.mark.parametrize("custom_selection", [False, True])
+def test_prepare_data_selects_tasks_and_excludes_solutions(tmp_path, custom_selection):
+    import importlib.util
+
+    example = Path(__file__).resolve().parents[2] / "examples/agent/harbor"
+    spec = importlib.util.spec_from_file_location(
+        "prepare_data", example / "prepare_data.py"
+    )
+    prepare_data = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(prepare_data)
+    bundled_ids = list(prepare_data.SWE_GYM_LITE_TASKS)
+    source = tmp_path / "source"
+    for instance_id in [*bundled_ids, "extra-task"]:
+        task = source / instance_id
+        (task / "solution").mkdir(parents=True)
+        (task / "task.toml").write_text('version = "1.0"\n')
+        (task / "instruction.md").write_text(f"Fix {instance_id}.")
+        (task / "solution" / "solve.sh").write_text("oracle patch")
+    output = tmp_path / "exported"
+    command = [
+        sys.executable,
+        str(example / "prepare_data.py"),
+        "--source-tasks",
+        str(source),
+        "--output-dir",
+        str(output),
+    ]
+    expected_ids, dataset_id = bundled_ids, "swe-gym-lite"
+    if custom_selection:
+        expected_ids, dataset_id = ["extra-task"], "custom-swe"
+        command.extend(["--instance-ids", "extra-task", "--dataset-id", dataset_id])
+    subprocess.run(command, check=True, capture_output=True, text=True)
+    records = [
+        json.loads(line) for line in (output / "train.jsonl").read_text().splitlines()
+    ]
+    assert [r["instance_id"] for r in records] == expected_ids
+    assert {p.name for p in (output / "tasks").iterdir()} == set(expected_ids)
+    for record in records:
+        instance_id = record["instance_id"]
+        assert record["dataset_id"] == dataset_id
+        assert record["prompt"] == f"Fix {instance_id}."
+        assert record["solutions"] == {
+            "instance_id": instance_id,
+            "dataset_id": dataset_id,
+        }
+        task = output / "tasks" / instance_id
+        assert (task / "task.toml").is_file()
+        assert not (task / "solution").exists()
 
 
 def test_harbor_config_uses_only_selected_backend_and_one_token_limit():

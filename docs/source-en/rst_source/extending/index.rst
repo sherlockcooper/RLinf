@@ -64,12 +64,6 @@ SFT, then use Advanced Integrations for backend integration and weight transport
 
       Add Megatron-Bridge and weight synchronization workflows.
 
-   .. grid-item-card:: Harbor Task Service
-      :link: harbor
-      :link-type: doc
-
-      Run isolated agent trials through an independent HTTP service.
-
 .. toctree::
    :hidden:
 
@@ -82,4 +76,3 @@ SFT, then use Advanced Integrations for backend integration and weight transport
    SGLang Embodied Model <sglang_embodied_model>
    New SFT Model <new_model_sft>
    Advanced Integrations <advanced-integrations/index>
-   Harbor Task Service <harbor>

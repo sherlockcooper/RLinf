@@ -20,6 +20,18 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+# SWE-Gym/SWE-Gym-Lite train split, revision f70b1a29ab120eb0a0ee7a1deb029825e735b2b0.
+SWE_GYM_LITE_TASKS = (
+    "Project-MONAI__MONAI-5908",
+    "bokeh__bokeh-13289",
+    "conan-io__conan-12397",
+    "conan-io__conan-15422",
+    "getmoto__moto-4990",
+    "iterative__dvc-1661",
+    "modin-project__modin-6298",
+    "pandas-dev__pandas-56849",
+)
+
 
 def export_tasks(
     source_tasks: Path, output_dir: Path, instance_ids: list[str], dataset_id: str
@@ -64,8 +76,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-tasks", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--instance-ids", nargs="+", required=True)
-    parser.add_argument("--dataset-id", required=True)
+    parser.add_argument(
+        "--instance-ids",
+        nargs="+",
+        default=list(SWE_GYM_LITE_TASKS),
+        help="Task IDs to export (default: SWE_GYM_LITE_TASKS).",
+    )
+    parser.add_argument("--dataset-id", default="swe-gym-lite")
     args = parser.parse_args()
     export_tasks(args.source_tasks, args.output_dir, args.instance_ids, args.dataset_id)
 
